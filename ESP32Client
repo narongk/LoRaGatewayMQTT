@@ -1,0 +1,226 @@
+//Libraries for LoRa
+#include <SPI.h>
+#include <LoRa.h>
+
+//Libraries for OLED Display
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+
+//define the pins used by the LoRa transceiver module
+#define SCK 5
+#define MISO 19
+#define MOSI 27
+#define SS 18
+#define RST 14
+#define DIO0 26
+
+//433E6 for Asia
+//866E6 for Europe
+//915E6 for North America
+#define BAND 433.175E6
+
+//OLED pins
+#define OLED_SDA 4
+#define OLED_SCL 15 
+#define OLED_RST 16
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+unsigned long time1;
+time_t now;
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
+
+String LoRaData;
+String outgoing;              // outgoing message
+byte msgCount = 0;            // count of outgoing messages
+byte localAddress = 1;     //  address of this device
+byte getWayAddress = 255;      // 1 destination to send to
+long lastSendTime = 0;        // last send time
+//char *response[100];
+char response[100];
+int logLine = 0;
+String tmp;
+typedef struct {
+  byte recipient;
+  byte sender;
+  byte incomingMsgId;
+  byte incomingLength;
+  byte pin;
+  char mode;
+  String msg;
+  unsigned long count;
+ } _l_packet;
+
+_l_packet pkt;
+boolean gotpacket = false;
+void setup() { 
+  //initialize Serial Monitor
+  Serial.begin(115200);
+  initdisplay();
+  messageLog("initlora()");
+  initlora();
+  /*
+  messageLog("connectWifi()");  
+  connectWifi();
+  messageLog("connectMqtt()");  
+  connectMqtt();
+  */
+  tmp = "LORA Addresss:"+String(localAddress);
+  messageLog(tmp.c_str());
+}
+
+void loop() {
+  //int packetSize = LoRa.parsePacket();
+  sendRegisToLoRA(11,"ON");
+  delay(2000);
+  sprintf(response, "{\"E\":%s,\"F\":%s}", String(10).c_str(), String(15).c_str());
+  sendSensorToLoRA(response);
+  delay(2000);
+  
+  sendStateToLoRA(11,"ON");
+  delay(2000);
+  
+  if (gotpacket) {
+    //received a packet
+    messageLog("Received packet ");
+    
+    if(pkt.recipient==localAddress){
+      tmp = "Allow Addresss:"+String(pkt.sender);
+      messageLog(tmp.c_str());
+      Serial.println(pkt.msg.c_str());
+      
+      //print RSSI of packet
+      int rssi = LoRa.packetRssi();
+      Serial.println(" with RSSI :"+rssi);    
+      logLine = 0;
+      statusDisplay();
+    }else{
+      tmp = "Not Allow Addresss:"+String(pkt.sender);
+      messageLog(tmp.c_str());
+    }
+  }
+  
+}
+void onReceive(int packetSize) {
+  // read packet header bytes:
+  pkt.recipient = LoRa.read();          // recipient address
+  pkt.sender = LoRa.read();            // sender address
+  pkt.pin = LoRa.read();    // incoming pin GPIO
+  pkt.mode = LoRa.read();    // Mode R-Register,S-Senser,G-GPIO
+  pkt.incomingMsgId = LoRa.read();     // incoming msg ID
+  pkt.incomingLength = LoRa.read();    // incoming msg length
+  
+  //read packet
+  while (LoRa.available()) {
+    pkt.msg = LoRa.readString();
+  }
+  gotpacket = true;
+  
+}
+String toISOString(tm* time, bool incOffset) {
+  char time_string[25];
+  strftime(time_string, 25, incOffset ? "%FT%T%z" : "%FT%TZ", time);
+  return String(time_string);
+}
+void sendRegisToLoRA(int pin,String outgoing) {
+  LoRa.beginPacket();                   // start packet
+  LoRa.write(getWayAddress);              // add destination address
+  LoRa.write(localAddress);             // add sender address
+  LoRa.write('R');                 //Mode R-Register,S-Senser,G-GPIO
+  LoRa.write(pin);                 // add PIN GPIO
+  LoRa.write(msgCount);                 // add message ID
+  LoRa.write(outgoing.length());        // add payload length
+  LoRa.print(outgoing);                 // add payload
+  LoRa.endPacket();                     // finish packet and send it
+  msgCount++;                           // increment message ID
+}
+void sendStateToLoRA(int pin,String outgoing) {
+  LoRa.beginPacket();                   // start packet
+  LoRa.write(getWayAddress);              // add destination address
+  LoRa.write(localAddress);             // add sender address
+  LoRa.write('G');                 //Mode R-Register,S-Senser,G-GPIO
+  LoRa.write(pin);                 // add PIN GPIO
+  LoRa.write(msgCount);                 // add message ID
+  LoRa.write(outgoing.length());        // add payload length
+  LoRa.print(outgoing);                 // add payload
+  LoRa.endPacket();                     // finish packet and send it
+  msgCount++;                           // increment message ID
+}
+void sendSensorToLoRA(String outgoing) {
+  LoRa.beginPacket();                   // start packet
+  LoRa.write(getWayAddress);              // add destination address
+  LoRa.write(localAddress);             // add sender address
+  LoRa.write('S');                 //Mode R-Register,S-Senser,G-GPIO
+  LoRa.write(-1);                 // add PIN GPIO
+  LoRa.write(msgCount);                 // add message ID(PIN GPIO)
+  LoRa.write(outgoing.length());        // add payload length
+  LoRa.print(outgoing);                 // add payload
+  LoRa.endPacket();                     // finish packet and send it
+  msgCount++;                           // increment message ID
+}
+void initdisplay(){
+  //reset OLED display via software
+  pinMode(OLED_RST, OUTPUT);
+  digitalWrite(OLED_RST, LOW);
+  delay(20);
+  digitalWrite(OLED_RST, HIGH);
+  
+  //initialize OLED
+  Wire.begin(OLED_SDA, OLED_SCL);
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3c, false, false)) { // Address 0x3C for 128x32
+    messageLog("SSD1306 allocation failed");
+    while (1); // Don't proceed, loop forever
+  }
+}
+void initlora(){
+  //SPI LoRa pins
+  messageLog("LORA RECEIVER ");  
+  SPI.begin(SCK, MISO, MOSI, SS);
+  //setup LoRa transceiver module
+  LoRa.setPins(SS, RST, DIO0);
+
+  if (!LoRa.begin(BAND)) {
+    messageLog("Starting LoRa failed!");
+    while (1);
+  }
+  messageLog("LoRa Initializing OK!");
+  // register the receive callback
+  LoRa.onReceive(onReceive);
+
+  // put the radio into receive mode
+  LoRa.receive();
+}
+void messageLog(const char *msg){
+  if(logLine>50) { logLine=0; }
+  if(logLine==0) {display.clearDisplay();}
+  display.setTextColor(WHITE);
+  display.setTextSize(1);
+  Serial.println("Line:");
+  Serial.println(logLine);
+  display.setCursor(0,logLine);
+  display.print(msg);
+  display.display();
+  Serial.println(msg);
+  logLine = logLine + 10;
+  delay(500);
+}
+void statusDisplay(){
+  // Dsiplay information
+  display.clearDisplay();
+  display.setCursor(0,0);
+  tmp = "GateWay Addresss:"+String(localAddress);
+  display.print(tmp);
+  display.setCursor(0,10);
+  tmp = "Sender Addresss:"+String(pkt.sender);
+  display.print(tmp);
+  display.setCursor(0,20);
+  display.print("Received packet:");
+  display.setCursor(0,30);
+  display.print(pkt.msg);
+  display.setCursor(0,40);
+  display.print("RSSI:");
+  display.setCursor(30,40);
+  display.print(LoRa.packetRssi());
+  display.display();   
+}
