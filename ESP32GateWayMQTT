@@ -39,14 +39,26 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
 String LoRaData;
 String outgoing;              // outgoing message
 byte msgCount = 0;            // count of outgoing messages
-byte localAddress = 0x6F;     // 111 address of this device
-byte clientAddress = 0x1;      // 1 destination to send to
+byte localAddress = 255;     // 255 address of this device
+byte clientAddress = 1;      // 1 destination to send to
 long lastSendTime = 0;        // last send time
 //char *response[100];
 char response[100];
 int logLine = 0;
 String tmp;
+typedef struct {
+  byte recipient;
+  byte sender;
+  byte incomingMsgId;
+  byte incomingLength;
+  byte pin;
+  char mode;
+  String msg;
+  unsigned long count;
+ } _l_packet;
 
+_l_packet pkt;
+boolean gotpacket = false;
 void setup() { 
   //initialize Serial Monitor
   Serial.begin(115200);
@@ -57,68 +69,66 @@ void setup() {
   connectWifi();
   messageLog("connectMqtt()");  
   connectMqtt();
-  tmp = "LORA Addresss:0x"+String(localAddress, HEX);
+  tmp = "LORA Addresss:"+localAddress;
   messageLog(tmp.c_str());
 }
 
 void loop() {
 //try to parse packet
   client.loop();
-  int packetSize = LoRa.parsePacket();
-  if (packetSize) {
-    //received a packet
+  //int packetSize = LoRa.parsePacket();
+  if (gotpacket) {
+    gotpacket = false;
     messageLog("Received packet ");
-    // read packet header bytes:
-    byte recipient = LoRa.read();          // recipient address
-    byte sender = LoRa.read();            // sender address
-    byte incomingMsgId = LoRa.read();     // incoming msg ID
-    byte incomingLength = LoRa.read();    // incoming msg length
-    String incoming = "";
-
-    if(recipient==localAddress){
-      tmp = "Allow Addresss:0x"+String(sender, HEX);
+    
+    if(pkt.recipient==localAddress){
+      tmp = "Allow Addresss:"+String(pkt.sender);
       messageLog(tmp.c_str());
-      client.subscribe((C_CMD_TOPIC+sender+"/*").c_str());
-      //read packet
-      while (LoRa.available()) {
-      LoRaData = LoRa.readString();
-      messageLog(LoRaData.c_str());
-      }
+      
+      Serial.println(pkt.msg.c_str());
       
       //print RSSI of packet
       int rssi = LoRa.packetRssi();
-      messageLog(" with RSSI :"+rssi);    
-      
-      sprintf(response, "{\"RSSI\":%s,\"SNR\":%s}", String(rssi).c_str(), LoRa.packetSnr());
+      Serial.println(" with RSSI :"+rssi);    
+      sprintf(response, "{\"RSSI\":%s,\"Addr\":%s}", String(rssi).c_str(),String(localAddress).c_str());  
       client.publish(GW_STATE_TOPIC, response);
+
+      if(pkt.mode=='R'){
+        client.subscribe((C_CMD_TOPIC+String(pkt.sender)+"/"+pkt.msg).c_str());
+      }else if(pkt.mode=='S'){
+        tmp = C_BASE_TOPIC + String(pkt.sender)+"/SENSOR";
+        messageLog(tmp.c_str());
+        client.publish(tmp.c_str(), pkt.msg.c_str());
+      }else if(pkt.mode=='G'){
+        tmp = C_BASE_TOPIC + String(pkt.sender) +"/"+String(pkt.pin);
+        messageLog(tmp.c_str());
+        client.publish(tmp.c_str(), pkt.msg.c_str());
+      }
       
-      // Dsiplay information
-      display.clearDisplay();
-      display.setCursor(0,0);
-      tmp = "GateWay Addresss:0x"+String(recipient, HEX);
-      display.print(tmp);
-      display.setCursor(0,10);
-      tmp = "Sender Addresss:0x"+String(sender, HEX);
-      display.print(tmp);
-      display.setCursor(0,20);
-      display.print("Received packet:");
-      display.setCursor(0,30);
-      display.print(LoRaData);
-      display.setCursor(0,40);
-      display.print("RSSI:");
-      display.setCursor(30,40);
-      display.print(rssi);
-      display.display();   
-      client.publish(C_BASE_TOPIC.c_str(), LoRaData.c_str());
       logLine = 0;
+      statusDisplay();
+      
     }else{
-      tmp = "Not Allow Addresss:0x"+String(sender, HEX);
+      tmp = "Not Allow Addresss:"+String(pkt.sender);
       messageLog(tmp.c_str());
     }
   }
   
 }
 void onReceive(int packetSize) {
+  // read packet header bytes:
+  pkt.recipient = LoRa.read();          // recipient address
+  pkt.sender = LoRa.read();            // sender address
+  pkt.mode = LoRa.read();            // Mode R-Register,S-Senser,G-GPIO
+  pkt.pin = LoRa.read();    // incoming pin GPIO
+  pkt.incomingMsgId = LoRa.read();     // incoming msg ID
+  pkt.incomingLength = LoRa.read();    // incoming msg length
+  
+  //read packet
+  while (LoRa.available()) {
+    pkt.msg = LoRa.readString();
+  }
+  gotpacket = true;
   
 }
 void connectWifi() {
@@ -179,8 +189,9 @@ void sendMessageToLoRA(String outgoing) {
   LoRa.beginPacket();                   // start packet
   LoRa.write(clientAddress);              // add destination address
   LoRa.write(localAddress);             // add sender address
-  LoRa.write(msgCount);                 // add message ID(PIN GPIO)
+  LoRa.write('G');                 // add Mode R-Register,S-Senser,G-GPIO
   LoRa.write(11);                 // add PIN GPIO
+  LoRa.write(msgCount);                 // add message ID(PIN GPIO)
   LoRa.write(outgoing.length());        // add payload length
   LoRa.print(outgoing);                 // add payload
   LoRa.endPacket();                     // finish packet and send it
@@ -213,22 +224,39 @@ void initlora(){
   }
   messageLog("LoRa Initializing OK!");
   // register the receive callback
-  //LoRa.onReceive(onReceive);
+  LoRa.onReceive(onReceive);
 
   // put the radio into receive mode
-  //LoRa.receive();
+  LoRa.receive();
 }
 void messageLog(const char *msg){
   if(logLine>50) { logLine=0; }
   if(logLine==0) {display.clearDisplay();}
   display.setTextColor(WHITE);
   display.setTextSize(1);
-  Serial.println("Line:");
-  Serial.println(logLine);
   display.setCursor(0,logLine);
   display.print(msg);
   display.display();
   Serial.println(msg);
   logLine = logLine + 10;
-  delay(1000);
+  delay(500);
+}
+void statusDisplay(){
+  // Dsiplay information
+  display.clearDisplay();
+  display.setCursor(0,0);
+  tmp = "GateWay Addresss:"+String(localAddress);
+  display.print(tmp);
+  display.setCursor(0,10);
+  tmp = "Sender Addresss:"+String(pkt.sender);
+  display.print(tmp);
+  display.setCursor(0,20);
+  display.print("Received packet:");
+  display.setCursor(0,30);
+  display.print(pkt.msg);
+  display.setCursor(0,40);
+  display.print("RSSI:");
+  display.setCursor(30,40);
+  display.print(LoRa.packetRssi());
+  display.display();   
 }
