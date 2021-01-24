@@ -39,12 +39,154 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
 String LoRaData;
 String outgoing;              // outgoing message
 byte msgCount = 0;            // count of outgoing messages
-byte localAddress = 0xBB;     // address of this device
-byte destination = 0xFF;      // destination to send to
+byte localAddress = 0x6F;     // 111 address of this device
+byte clientAddress = 0x1;      // 1 destination to send to
 long lastSendTime = 0;        // last send time
+//char *response[100];
+char response[100];
+int logLine = 0;
+String tmp;
 
 void setup() { 
+  //initialize Serial Monitor
+  Serial.begin(115200);
+  initdisplay();
+  messageLog("initlora()");
+  initlora();
+  messageLog("connectWifi()");  
+  connectWifi();
+  messageLog("connectMqtt()");  
+  connectMqtt();
+  tmp = "LORA Addresss:0x"+String(localAddress, HEX);
+  messageLog(tmp.c_str());
+}
+
+void loop() {
+//try to parse packet
+  client.loop();
+  int packetSize = LoRa.parsePacket();
+  if (packetSize) {
+    //received a packet
+    messageLog("Received packet ");
+    // read packet header bytes:
+    byte recipient = LoRa.read();          // recipient address
+    byte sender = LoRa.read();            // sender address
+    byte incomingMsgId = LoRa.read();     // incoming msg ID
+    byte incomingLength = LoRa.read();    // incoming msg length
+    String incoming = "";
+
+    if(recipient==localAddress){
+      tmp = "Allow Addresss:0x"+String(sender, HEX);
+      messageLog(tmp.c_str());
+      client.subscribe((C_CMD_TOPIC+sender+"/*").c_str());
+      //read packet
+      while (LoRa.available()) {
+      LoRaData = LoRa.readString();
+      messageLog(LoRaData.c_str());
+      }
+      
+      //print RSSI of packet
+      int rssi = LoRa.packetRssi();
+      messageLog(" with RSSI :"+rssi);    
+      
+      sprintf(response, "{\"RSSI\":%s,\"SNR\":%s}", String(rssi).c_str(), LoRa.packetSnr());
+      client.publish(GW_STATE_TOPIC, response);
+      
+      // Dsiplay information
+      display.clearDisplay();
+      display.setCursor(0,0);
+      tmp = "GateWay Addresss:0x"+String(recipient, HEX);
+      display.print(tmp);
+      display.setCursor(0,10);
+      tmp = "Sender Addresss:0x"+String(sender, HEX);
+      display.print(tmp);
+      display.setCursor(0,20);
+      display.print("Received packet:");
+      display.setCursor(0,30);
+      display.print(LoRaData);
+      display.setCursor(0,40);
+      display.print("RSSI:");
+      display.setCursor(30,40);
+      display.print(rssi);
+      display.display();   
+      client.publish(C_BASE_TOPIC.c_str(), LoRaData.c_str());
+      logLine = 0;
+    }else{
+      tmp = "Not Allow Addresss:0x"+String(sender, HEX);
+      messageLog(tmp.c_str());
+    }
+  }
   
+}
+void onReceive(int packetSize) {
+  
+}
+void connectWifi() {
+  messageLog("Connecting to WiFi...");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    messageLog(".");
+  }
+  messageLog("WiFi connected");
+  configTzTime("<+07>-7", "time.google.com");
+}
+
+void disconnectWifi() {
+  WiFi.disconnect(true);
+  messageLog("WiFi disonnected");
+}
+
+void connectMqtt() {
+  messageLog("Connecting to MQTT");
+  client.setServer(MQTT_HOST, MQTT_PORT);
+
+  while (!client.connected()) {
+    if (!client.connect(MQTT_CLIENTID, MQTT_USERNAME, MQTT_PASSWORD)) {
+      messageLog("MQTT connection failed:");
+      messageLog(String(client.state()).c_str());
+      messageLog("Retrying...");
+      delay(MQTT_RETRY_WAIT);
+    }
+  }
+  client.setCallback(onMessageMqtt);
+  messageLog("MQTT connected");
+}
+
+void disconnectMqtt() {
+  client.disconnect();
+  messageLog("MQTT disconnected");
+}
+String toISOString(tm* time, bool incOffset) {
+  char time_string[25];
+  strftime(time_string, 25, incOffset ? "%FT%T%z" : "%FT%TZ", time);
+  return String(time_string);
+}
+void onMessageMqtt(char* topic, byte* payload, unsigned int length) {
+  
+  messageLog("Message arrived:");
+  messageLog(topic);
+  String outgoing;
+  for (int i=0;i<length;i++) {
+    //Serial.print((char)payload[i]);
+    outgoing+=(char)payload[i];
+  }
+  sendMessageToLoRA(outgoing);
+  //Serial.println();
+}
+void sendMessageToLoRA(String outgoing) {
+  LoRa.beginPacket();                   // start packet
+  LoRa.write(clientAddress);              // add destination address
+  LoRa.write(localAddress);             // add sender address
+  LoRa.write(msgCount);                 // add message ID(PIN GPIO)
+  LoRa.write(11);                 // add PIN GPIO
+  LoRa.write(outgoing.length());        // add payload length
+  LoRa.print(outgoing);                 // add payload
+  LoRa.endPacket();                     // finish packet and send it
+  msgCount++;                           // increment message ID
+}
+void initdisplay(){
   //reset OLED display via software
   pinMode(OLED_RST, OUTPUT);
   digitalWrite(OLED_RST, LOW);
@@ -54,137 +196,39 @@ void setup() {
   //initialize OLED
   Wire.begin(OLED_SDA, OLED_SCL);
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3c, false, false)) { // Address 0x3C for 128x32
-    Serial.println(F("SSD1306 allocation failed"));
-    for(;;); // Don't proceed, loop forever
+    messageLog("SSD1306 allocation failed");
+    while (1); // Don't proceed, loop forever
   }
-
-  display.clearDisplay();
-  display.setTextColor(WHITE);
-  display.setTextSize(1);
-  display.setCursor(0,0);
-  display.print("LORA RECEIVER ");
-  display.display();
-  
-  //initialize Serial Monitor
-  Serial.begin(115200);
-
-  Serial.println("LoRa Receiver Test");
-  
+}
+void initlora(){
   //SPI LoRa pins
+  messageLog("LORA RECEIVER ");  
   SPI.begin(SCK, MISO, MOSI, SS);
   //setup LoRa transceiver module
   LoRa.setPins(SS, RST, DIO0);
 
   if (!LoRa.begin(BAND)) {
-    Serial.println("Starting LoRa failed!");
+    messageLog("Starting LoRa failed!");
     while (1);
   }
-  Serial.println("LoRa Initializing OK!");
-  display.setCursor(0,10);
-  display.println("LoRa Initializing OK!");
-  display.display();  
+  messageLog("LoRa Initializing OK!");
   // register the receive callback
   //LoRa.onReceive(onReceive);
 
   // put the radio into receive mode
   //LoRa.receive();
-
-  connectWifi();
-  connectMqtt();
 }
-
-void loop() {
-//try to parse packet
-  int packetSize = LoRa.parsePacket();
-  if (packetSize) {
-    //received a packet
-    Serial.print("Received packet ");
-
-    /*
-    // read packet header bytes:
-    int recipient = LoRa.read();          // recipient address
-    byte sender = LoRa.read();            // sender address
-    byte incomingMsgId = LoRa.read();     // incoming msg ID
-    byte incomingLength = LoRa.read();    // incoming msg length
-    String incoming = "";
-    */
-    //read packet
-    while (LoRa.available()) {
-      LoRaData = LoRa.readString();
-      Serial.print(LoRaData);
-    }
-
-    //print RSSI of packet
-    int rssi = LoRa.packetRssi();
-    Serial.print(" with RSSI ");    
-    Serial.println(rssi);
-
-   // Dsiplay information
-   display.clearDisplay();
-   display.setCursor(0,0);
-   display.print("LORA RECEIVER");
-   display.setCursor(0,20);
-   display.print("Received packet:");
-   display.setCursor(0,30);
-   display.print(LoRaData);
-   display.setCursor(0,40);
-   display.print("RSSI:");
-   display.setCursor(30,40);
-   display.print(rssi);
-   display.display();   
-   String baseTopic = MQTT_BASE_TOPIC;
-   client.publish(baseTopic.c_str(), LoRaData.c_str());
-
-  }
-  
-  
-}
-void onReceive(int packetSize) {
-  
-}
-void connectWifi() {
-  Serial.println("Connecting to WiFi...");
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println("");
-  configTzTime("<+07>-7", "time.google.com");
-}
-
-void disconnectWifi() {
-  WiFi.disconnect(true);
-  Serial.println("WiFi disonnected");
-}
-
-void connectMqtt() {
-  Serial.println("Connecting to MQTT...");
-  client.setServer(MQTT_HOST, MQTT_PORT);
-
-  while (!client.connected()) {
-    if (!client.connect(MQTT_CLIENTID, MQTT_USERNAME, MQTT_PASSWORD)) {
-      Serial.print("MQTT connection failed:");
-      Serial.print(client.state());
-      Serial.println("Retrying...");
-      delay(MQTT_RETRY_WAIT);
-    }
-  }
-
-  Serial.println("MQTT connected");
-  Serial.println("");
-}
-
-void disconnectMqtt() {
-  client.disconnect();
-  Serial.println("MQTT disconnected");
-}
-String toISOString(tm* time, bool incOffset) {
-  char time_string[25];
-  strftime(time_string, 25, incOffset ? "%FT%T%z" : "%FT%TZ", time);
-  return String(time_string);
+void messageLog(const char *msg){
+  if(logLine>50) { logLine=0; }
+  if(logLine==0) {display.clearDisplay();}
+  display.setTextColor(WHITE);
+  display.setTextSize(1);
+  Serial.println("Line:");
+  Serial.println(logLine);
+  display.setCursor(0,logLine);
+  display.print(msg);
+  display.display();
+  Serial.println(msg);
+  logLine = logLine + 10;
+  delay(1000);
 }
