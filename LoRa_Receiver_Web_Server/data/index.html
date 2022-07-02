@@ -1,0 +1,64 @@
+<!DOCTYPE HTML><html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8">
+  <link rel="icon" href="data:,">
+  <title>TRM2564-317(Esp32 LoRa)</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      text-align: center;
+    }
+    header {
+      margin: 0;
+      padding-top: 5vh;
+      padding-bottom: 5vh;
+      overflow: hidden;
+      background-image: url(winter);
+      background-size: cover;
+      color: white;
+    }
+    h2 {
+      font-size: 2.0rem;
+    }
+    p { font-size: 2.2rem; }
+    .units { font-size: 1.2rem; }
+    .readings { font-size: 2.0rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h2>Solar Pump Inverter(Esp32 LoRa)</h2>
+    <p><strong>Last received packet:<br/><span id="timestamp">%TIMESTAMP%</span></strong></p>
+    <p>LoRa RSSI: <span id="rssi">%RSSI%</span></p>
+  </header>
+<main>
+  <p>
+    <i class="" style="color:#059e8a;"></i> ความถึ่: <span id="data1" class="readings">%DATA1%</span>
+    Hz</p>
+  <p>
+    <i class="" style="color:#059e8a;"></i> แรงดัน: <span id="data2" class="readings">%DATA2%</span>
+    V</p>
+  <p>
+    <i class="" style="color:#059e8a;"></i> กระแส: <span id="data3" class="readings">%DATA3%</span>
+    A</p>
+</main>
+<script>
+setInterval(updateValues, 10000, "data1");
+setInterval(updateValues, 10000, "data2");
+setInterval(updateValues, 10000, "data3");
+setInterval(updateValues, 10000, "rssi");
+function updateValues(value) {
+  var xhttp = new XMLHttpRequest();
+  xhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+      document.getElementById(value).innerHTML = this.responseText;
+    }
+  };
+  xhttp.open("GET", "/" + value, true);
+  xhttp.send();
+}
+</script>
+</body>
+</html>
